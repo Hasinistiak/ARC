@@ -1,1 +1,0 @@
-A little launcher I made for myself to quickly open apps and run commands without having to dig through menus or terminals. I can type what I want, like opening Spotify or Chrome, and ARC handles it for me.
