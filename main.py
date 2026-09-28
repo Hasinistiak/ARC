@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -212,13 +211,6 @@ class ArcCore:
     # ------------------------------------------------------------------------
 
     def handle(self, user_input: str) -> bool:
-        """
-        Process one command.
-
-        Returns:
-            True  -> ARC should remain open.
-            False -> ARC should close.
-        """
 
         user_input = self.normalize(user_input)
 
@@ -227,15 +219,6 @@ class ArcCore:
 
         # --------------------------------------------------------------------
         # ZOE ROUTING
-        #
-        # Anything beginning with "zoe" goes directly to the ZOE server.
-        #
-        # Examples:
-        #   zoe how's the weather
-        #   zoe open spotify
-        #   zoe what time is it
-        #
-        # ZOE is the ONLY route that keeps ARC open.
         # --------------------------------------------------------------------
 
         if user_input == "zoe" or user_input.startswith("zoe "):
@@ -307,7 +290,6 @@ class ArcCore:
                 exc,
             )
 
-        # App shortcuts also close ARC.
         return False
 
     # ------------------------------------------------------------------------
@@ -507,7 +489,6 @@ class ArcCore:
 
                 print(f"ZOE: {result}")
 
-                # Send response to the ARC UI.
                 if self.zoe_response_callback:
 
                     self.zoe_response_callback(
@@ -619,13 +600,21 @@ class ArcCore:
     # NEW PROJECT
     # ------------------------------------------------------------------------
 
-    def command_new_project(self, argument: str):
+    def command_new_project(
+        self,
+        argument: str,
+    ):
+
         if getattr(sys, "frozen", False):
-        # Running as ARC.exe
-            base_dir = os.path.dirname(os.path.abspath(sys.executable))
+            # Running as ARC.exe
+            base_dir = os.path.dirname(
+                os.path.abspath(sys.executable)
+            )
         else:
-        # Running from source with Python
-            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # Running from source with Python
+            base_dir = os.path.dirname(
+                os.path.abspath(__file__)
+            )
 
         creator_exe = os.path.join(
             base_dir,
@@ -633,8 +622,10 @@ class ArcCore:
         )
 
         if not os.path.exists(creator_exe):
+
             raise FileNotFoundError(
-                f"AutoProjectCreator.exe not found at:\n{creator_exe}"
+                f"AutoProjectCreator.exe not found at:\n"
+                f"{creator_exe}"
             )
 
         subprocess.Popen(
@@ -789,6 +780,13 @@ class ArcLauncher:
 
         self.root = tk.Tk()
 
+        # IMPORTANT:
+        # Hide the Tkinter window immediately.
+        #
+        # This prevents Windows from displaying the default
+        # blank/white Tk window while ARC is being constructed.
+        self.root.withdraw()
+
         self.history: list[str] = []
         self.history_index = 0
 
@@ -805,6 +803,16 @@ class ArcLauncher:
         # Give ZOE a dedicated response channel.
         self.core.zoe_response_callback = (
             self.show_zoe_response
+        )
+
+        # Everything is now built.
+        # Show the actual ARC UI.
+        self.root.deiconify()
+
+        # Focus after the window has actually appeared.
+        self.root.after(
+            50,
+            self._focus_arc,
         )
 
     # ========================================================================
@@ -853,6 +861,24 @@ class ArcLauncher:
                 0.98,
             )
 
+        except tk.TclError:
+            pass
+
+    # ========================================================================
+    # FOCUS
+    # ========================================================================
+
+    def _focus_arc(self):
+
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes(
+                "-topmost",
+                True,
+            )
+            self.root.focus_force()
+            self.entry.focus_force()
         except tk.TclError:
             pass
 
@@ -911,7 +937,6 @@ class ArcLauncher:
 
         self.header.pack_propagate(False)
 
-        # ARC branding
         self.arc_label = tk.Label(
             self.header,
             text="ACTION ROUTING CORE",
@@ -926,7 +951,6 @@ class ArcLauncher:
             padx=(14, 4),
         )
 
-        # Divider
         self.header_divider = tk.Label(
             self.header,
             text="·",
@@ -939,7 +963,6 @@ class ArcLauncher:
             side=tk.LEFT,
         )
 
-        # Version
         self.version_label = tk.Label(
             self.header,
             text=f" {VERSION}",
@@ -953,7 +976,6 @@ class ArcLauncher:
             side=tk.LEFT,
         )
 
-        # Right side status
         self.status_label = tk.Label(
             self.header,
             text="READY",
@@ -1044,8 +1066,6 @@ class ArcLauncher:
             pady=8,
         )
 
-        self.entry.focus_force()
-
         # --------------------------------------------------------------------
         # ZOE RESPONSE AREA
         # --------------------------------------------------------------------
@@ -1091,7 +1111,6 @@ class ArcLauncher:
             pady=(0, 7),
         )
 
-        # Description
         self.description_label = tk.Label(
             self.bottom,
             text="Type a command",
@@ -1105,7 +1124,6 @@ class ArcLauncher:
             side=tk.LEFT,
         )
 
-        # Keyboard hints
         self.hints_label = tk.Label(
             self.bottom,
             text="ENTER  EXECUTE     ↑↓  HISTORY     ESC  CLOSE",
@@ -1119,7 +1137,6 @@ class ArcLauncher:
             side=tk.RIGHT,
         )
 
-        # Live command detection
         self.entry.bind(
             "<KeyRelease>",
             self.on_key_release,
@@ -1324,18 +1341,15 @@ class ArcLauncher:
 
         self.add_history(user_input)
 
-        # Clear immediately.
         self.entry.delete(
             0,
             tk.END,
         )
 
-        # Show processing state.
         self.set_processing(
             user_input
         )
 
-        # Run external actions outside Tkinter's main thread.
         threading.Thread(
             target=self.execute,
             args=(user_input,),
@@ -1357,7 +1371,6 @@ class ArcLauncher:
             user_input
         )
 
-        # Only commands beginning with "zoe" keep ARC alive.
         is_zoe = (
             normalized == "zoe"
             or normalized.startswith("zoe ")
@@ -1750,4 +1763,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
