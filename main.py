@@ -8,13 +8,12 @@ import threading
 import tkinter as tk
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from typing import Callable
 
-from open_app import open_app
-from open_site import open_site
-from search import google_search
-from file_search import search_everything_gui
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from open_windows import WindowInfo
 
 
 # ============================================================================
@@ -22,28 +21,24 @@ from file_search import search_everything_gui
 # ============================================================================
 
 APP_NAME = "ARC"
-VERSION = "3.0"
+VERSION = "4.0"
 
 WINDOW_WIDTH = 720
 WINDOW_HEIGHT = 190
 WINDOW_OFFSET_Y = 150
 
-# Stark monochrome palette
 BG_COLOR = "#050505"
 PANEL_COLOR = "#0A0A0A"
 INPUT_COLOR = "#0D0D0D"
 BORDER_COLOR = "#242424"
-BORDER_ACTIVE = "#5A5A5A"
+
 FG_COLOR = "#F5F5F5"
 MUTED_COLOR = "#777777"
 DIM_COLOR = "#454545"
-ACCENT_COLOR = "#F2F2F2"
 ERROR_COLOR = "#FF4D4D"
 
 FONT_MAIN = ("Consolas", 18)
-FONT_COMMAND = ("Consolas", 18, "bold")
 FONT_SMALL = ("Consolas", 9)
-FONT_LABEL = ("Consolas", 10, "bold")
 FONT_HINT = ("Consolas", 10)
 
 ZOE_SERVER_URL = "http://127.0.0.1:8000"
@@ -78,6 +73,10 @@ COMMAND_META = {
     "system": {
         "label": "SYSTEM",
         "description": "System control",
+    },
+    "nav": {
+        "label": "NAV",
+        "description": "Navigate open windows",
     },
     "exit": {
         "label": "EXIT",
@@ -131,17 +130,54 @@ class ArcCore:
         self,
         ui_callback: Callable[[str, str], None] | None = None,
         zoe_response_callback: Callable[[str, str], None] | None = None,
+        nav_callback: Callable[..., None] | None = None,
     ):
         self.running = True
         self.commands: list[Command] = []
+
         self.ui_callback = ui_callback
         self.zoe_response_callback = zoe_response_callback
+        self.nav_callback = nav_callback
 
         self._register_commands()
 
-    # ------------------------------------------------------------------------
-    # UI COMMUNICATION
-    # ------------------------------------------------------------------------
+    # ========================================================================
+    # LAZY IMPORTS
+    # ========================================================================
+
+    @staticmethod
+    def _open_app(argument: str):
+        from open_app import open_app
+        return open_app(argument)
+
+    @staticmethod
+    def _open_site(argument: str):
+        from open_site import open_site
+        return open_site(argument)
+
+    @staticmethod
+    def _google_search(argument: str):
+        from search import google_search
+        return google_search(argument)
+
+    @staticmethod
+    def _file_search(argument: str):
+        from file_search import search_everything_gui
+        return search_everything_gui(argument)
+
+    @staticmethod
+    def _get_open_windows():
+        from open_windows import get_open_windows
+        return get_open_windows()
+
+    @staticmethod
+    def _activate_window(window):
+        from open_windows import activate_window
+        return activate_window(window)
+
+    # ========================================================================
+    # UI
+    # ========================================================================
 
     def status(
         self,
@@ -153,9 +189,9 @@ class ArcCore:
         if self.ui_callback:
             self.ui_callback(message, kind)
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # COMMAND REGISTRATION
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def _register_commands(self):
 
@@ -191,6 +227,11 @@ class ArcCore:
                 description="System control → shutdown / restart / lock",
             ),
             Command(
+                name="nav",
+                handler=self.command_nav,
+                description="Navigate all open windows",
+            ),
+            Command(
                 name="exit",
                 handler=self.command_exit,
                 description="Exit ARC",
@@ -198,17 +239,19 @@ class ArcCore:
             ),
         ]
 
-    # ------------------------------------------------------------------------
-    # INPUT NORMALIZATION
-    # ------------------------------------------------------------------------
+    # ========================================================================
+    # NORMALIZATION
+    # ========================================================================
 
     @staticmethod
     def normalize(text: str) -> str:
-        return " ".join(text.strip().lower().split())
+        return " ".join(
+            text.strip().lower().split()
+        )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # MAIN ROUTER
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def handle(self, user_input: str) -> bool:
 
@@ -218,13 +261,16 @@ class ArcCore:
             return True
 
         # --------------------------------------------------------------------
-        # ZOE ROUTING
+        # ZOE
         # --------------------------------------------------------------------
 
-        if user_input == "zoe" or user_input.startswith("zoe "):
-            self.command_zoe(user_input[3:].strip())
-
-            # Keep ARC open for ZOE.
+        if (
+            user_input == "zoe"
+            or user_input.startswith("zoe ")
+        ):
+            self.command_zoe(
+                user_input[3:].strip()
+            )
             return True
 
         # --------------------------------------------------------------------
@@ -233,8 +279,6 @@ class ArcCore:
 
         if user_input in MODES:
             self.run_mode(user_input)
-
-            # Non-ZOE commands close ARC.
             return False
 
         # --------------------------------------------------------------------
@@ -268,21 +312,20 @@ class ArcCore:
                         exc,
                     )
 
-                # Exit is handled specially.
+                if command.name == "nav":
+                    return True
+
                 if command.name == "exit":
                     return self.running
 
-                # Every non-ZOE command closes ARC.
                 return False
 
         # --------------------------------------------------------------------
-        # CONVENIENCE:
-        #
-        # Typing "chrome" still opens Chrome.
+        # APP SHORTCUT
         # --------------------------------------------------------------------
 
         try:
-            open_app(user_input)
+            self._open_app(user_input)
 
         except Exception as exc:
             self.report_error(
@@ -292,9 +335,9 @@ class ArcCore:
 
         return False
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # MULTI COMMAND
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def handle_multiple(
         self,
@@ -314,9 +357,9 @@ class ArcCore:
 
         return self.running
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # MODES
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def run_mode(
         self,
@@ -326,14 +369,12 @@ class ArcCore:
         mode_name = self.normalize(mode_name)
 
         if mode_name not in MODES:
-
             self.report_error(
                 "mode",
                 ValueError(
                     f"Mode '{mode_name}' not found"
                 ),
             )
-
             return self.running
 
         self.status(
@@ -350,9 +391,9 @@ class ArcCore:
 
         return self.running
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # OPEN
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_open(
         self,
@@ -360,24 +401,22 @@ class ArcCore:
     ):
 
         if not argument:
-
             self.status(
                 "Usage → open <application>",
                 "error",
             )
-
             return
 
-        open_app(argument)
+        self._open_app(argument)
 
         self.status(
             f"Opened {argument}",
             "success",
         )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # SITE
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_site(
         self,
@@ -385,24 +424,22 @@ class ArcCore:
     ):
 
         if not argument:
-
             self.status(
                 "Usage → site <website>",
                 "error",
             )
-
             return
 
-        open_site(argument)
+        self._open_site(argument)
 
         self.status(
             f"Opened {argument}",
             "success",
         )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # SEARCH
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_search(
         self,
@@ -410,24 +447,83 @@ class ArcCore:
     ):
 
         if not argument:
-
             self.status(
                 "Usage → search <query>",
                 "error",
             )
-
             return
 
-        google_search(argument)
+        self._google_search(argument)
 
         self.status(
             "Search launched",
             "success",
         )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
+    # FILE SEARCH
+    # ========================================================================
+
+    def command_file(
+        self,
+        argument: str,
+    ):
+
+        if not argument:
+            self.status(
+                "Usage → file <query>",
+                "error",
+            )
+            return
+
+        self._file_search(argument)
+
+        self.status(
+            "File search launched",
+            "success",
+        )
+
+    # ========================================================================
+    # NAV
+    # ========================================================================
+
+    def command_nav(
+        self,
+        argument: str,
+    ):
+
+        self.status(
+            "Scanning open windows...",
+            "processing",
+        )
+
+        windows = self._get_open_windows()
+
+        if not windows:
+
+            self.status(
+                "No open windows found",
+                "error",
+            )
+
+            if self.nav_callback:
+                self.nav_callback("clear")
+
+            return
+
+        print(
+            f"ARC: Found {len(windows)} open window(s)"
+        )
+
+        if self.nav_callback:
+            self.nav_callback(
+                "show",
+                windows,
+            )
+
+    # ========================================================================
     # ZOE
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_zoe(
         self,
@@ -435,12 +531,10 @@ class ArcCore:
     ):
 
         if not argument:
-
             self.status(
                 "Usage → zoe <command>",
                 "error",
             )
-
             return
 
         self.status(
@@ -470,8 +564,10 @@ class ArcCore:
                 timeout=30,
             ) as response:
 
-                raw_response = response.read().decode(
-                    "utf-8"
+                raw_response = (
+                    response
+                    .read()
+                    .decode("utf-8")
                 )
 
                 data = json.loads(raw_response)
@@ -490,7 +586,6 @@ class ArcCore:
                 print(f"ZOE: {result}")
 
                 if self.zoe_response_callback:
-
                     self.zoe_response_callback(
                         result,
                         "success",
@@ -504,7 +599,6 @@ class ArcCore:
             else:
 
                 if self.zoe_response_callback:
-
                     self.zoe_response_callback(
                         "ZOE returned no response.",
                         "error",
@@ -532,7 +626,6 @@ class ArcCore:
             )
 
             if self.zoe_response_callback:
-
                 self.zoe_response_callback(
                     f"ZOE server error: HTTP {exc.code}",
                     "error",
@@ -551,7 +644,6 @@ class ArcCore:
             )
 
             if self.zoe_response_callback:
-
                 self.zoe_response_callback(
                     "Could not connect to ZOE.",
                     "error",
@@ -565,40 +657,14 @@ class ArcCore:
             )
 
             if self.zoe_response_callback:
-
                 self.zoe_response_callback(
                     f"ZOE error: {exc}",
                     "error",
                 )
 
-    # ------------------------------------------------------------------------
-    # FILE SEARCH
-    # ------------------------------------------------------------------------
-
-    def command_file(
-        self,
-        argument: str,
-    ):
-
-        if not argument:
-
-            self.status(
-                "Usage → file <query>",
-                "error",
-            )
-
-            return
-
-        search_everything_gui(argument)
-
-        self.status(
-            "File search launched",
-            "success",
-        )
-
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # NEW PROJECT
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_new_project(
         self,
@@ -606,12 +672,13 @@ class ArcCore:
     ):
 
         if getattr(sys, "frozen", False):
-            # Running as ARC.exe
+
             base_dir = os.path.dirname(
                 os.path.abspath(sys.executable)
             )
+
         else:
-            # Running from source with Python
+
             base_dir = os.path.dirname(
                 os.path.abspath(__file__)
             )
@@ -624,7 +691,7 @@ class ArcCore:
         if not os.path.exists(creator_exe):
 
             raise FileNotFoundError(
-                f"AutoProjectCreator.exe not found at:\n"
+                "AutoProjectCreator.exe not found at:\n"
                 f"{creator_exe}"
             )
 
@@ -638,9 +705,9 @@ class ArcCore:
             ),
         )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # SYSTEM
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_system(
         self,
@@ -666,16 +733,8 @@ class ArcCore:
 
         actions[action]()
 
-    # ------------------------------------------------------------------------
-    # SYSTEM ACTIONS
-    # ------------------------------------------------------------------------
-
     @staticmethod
     def system_shutdown():
-
-        print(
-            "\nARC: Shutting down system...\n"
-        )
 
         subprocess.Popen(
             [
@@ -687,14 +746,8 @@ class ArcCore:
             shell=False,
         )
 
-    # ------------------------------------------------------------------------
-
     @staticmethod
     def system_restart():
-
-        print(
-            "\nARC: Restarting system...\n"
-        )
 
         subprocess.Popen(
             [
@@ -706,14 +759,8 @@ class ArcCore:
             shell=False,
         )
 
-    # ------------------------------------------------------------------------
-
     @staticmethod
     def system_lock():
-
-        print(
-            "\nARC: Locking system...\n"
-        )
 
         subprocess.Popen(
             [
@@ -723,24 +770,19 @@ class ArcCore:
             shell=False,
         )
 
-    # ------------------------------------------------------------------------
+    # ========================================================================
     # EXIT
-    # ------------------------------------------------------------------------
+    # ========================================================================
 
     def command_exit(
         self,
         argument: str,
     ):
-
-        print(
-            "\nARC: Shutting down...\n"
-        )
-
         self.running = False
 
-    # ------------------------------------------------------------------------
-    # ERROR HANDLING
-    # ------------------------------------------------------------------------
+    # ========================================================================
+    # ERROR
+    # ========================================================================
 
     def report_error(
         self,
@@ -766,7 +808,7 @@ class ArcCore:
 
 
 # ============================================================================
-# ARC LAUNCHER UI
+# ARC LAUNCHER
 # ============================================================================
 
 class ArcLauncher:
@@ -778,40 +820,30 @@ class ArcLauncher:
 
         self.core = core
 
+        # Tk is created immediately.
         self.root = tk.Tk()
 
-        # IMPORTANT:
-        # Hide the Tkinter window immediately.
-        #
-        # This prevents Windows from displaying the default
-        # blank/white Tk window while ARC is being constructed.
         self.root.withdraw()
 
         self.history: list[str] = []
         self.history_index = 0
 
-        self.current_command = ""
-        self.current_argument = ""
+        self.nav_active = False
+        self.nav_windows: list[Any] = []
+        self.nav_index = 0
 
         self._configure_window()
         self._build_ui()
         self._bind_keys()
 
-        # Give the core a way to update the UI.
         self.core.ui_callback = self.update_status
+        self.core.zoe_response_callback = self.show_zoe_response
+        self.core.nav_callback = self.handle_nav_callback
 
-        # Give ZOE a dedicated response channel.
-        self.core.zoe_response_callback = (
-            self.show_zoe_response
-        )
-
-        # Everything is now built.
-        # Show the actual ARC UI.
         self.root.deiconify()
 
-        # Focus after the window has actually appeared.
         self.root.after(
-            50,
+            10,
             self._focus_arc,
         )
 
@@ -831,36 +863,35 @@ class ArcLauncher:
         ) // 2
 
         y = (
-            (screen_height - WINDOW_HEIGHT)
+            (
+                screen_height
+                - WINDOW_HEIGHT
+            )
             // 2
             - WINDOW_OFFSET_Y
         )
 
         self.root.geometry(
-            f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}+{x}+{y}"
+            f"{WINDOW_WIDTH}x"
+            f"{WINDOW_HEIGHT}+{x}+{y}"
         )
 
         self.root.configure(
             bg=BG_COLOR
         )
 
-        # Borderless.
         self.root.overrideredirect(True)
 
-        # Stay above normal windows.
         self.root.attributes(
             "-topmost",
             True,
         )
 
-        # Slight transparency.
         try:
-
             self.root.attributes(
                 "-alpha",
                 0.98,
             )
-
         except tk.TclError:
             pass
 
@@ -871,14 +902,18 @@ class ArcLauncher:
     def _focus_arc(self):
 
         try:
+
             self.root.deiconify()
             self.root.lift()
+
             self.root.attributes(
                 "-topmost",
                 True,
             )
+
             self.root.focus_force()
             self.entry.focus_force()
+
         except tk.TclError:
             pass
 
@@ -887,10 +922,6 @@ class ArcLauncher:
     # ========================================================================
 
     def _build_ui(self):
-
-        # --------------------------------------------------------------------
-        # OUTER FRAME
-        # --------------------------------------------------------------------
 
         self.outer = tk.Frame(
             self.root,
@@ -903,10 +934,6 @@ class ArcLauncher:
             fill=tk.BOTH,
             expand=True,
         )
-
-        # --------------------------------------------------------------------
-        # INNER PANEL
-        # --------------------------------------------------------------------
 
         self.panel = tk.Frame(
             self.outer,
@@ -921,9 +948,7 @@ class ArcLauncher:
             pady=1,
         )
 
-        # --------------------------------------------------------------------
         # HEADER
-        # --------------------------------------------------------------------
 
         self.header = tk.Frame(
             self.panel,
@@ -931,9 +956,7 @@ class ArcLauncher:
             height=32,
         )
 
-        self.header.pack(
-            fill=tk.X,
-        )
+        self.header.pack(fill=tk.X)
 
         self.header.pack_propagate(False)
 
@@ -990,23 +1013,15 @@ class ArcLauncher:
             padx=(4, 14),
         )
 
-        # --------------------------------------------------------------------
         # SEPARATOR
-        # --------------------------------------------------------------------
 
-        self.separator = tk.Frame(
+        tk.Frame(
             self.panel,
             bg=BORDER_COLOR,
             height=1,
-        )
+        ).pack(fill=tk.X)
 
-        self.separator.pack(
-            fill=tk.X,
-        )
-
-        # --------------------------------------------------------------------
-        # INPUT AREA
-        # --------------------------------------------------------------------
+        # INPUT
 
         self.input_container = tk.Frame(
             self.panel,
@@ -1018,10 +1033,6 @@ class ArcLauncher:
             padx=10,
             pady=(10, 5),
         )
-
-        # --------------------------------------------------------------------
-        # COMMAND BADGE
-        # --------------------------------------------------------------------
 
         self.command_badge = tk.Label(
             self.input_container,
@@ -1040,10 +1051,6 @@ class ArcLauncher:
             padx=(7, 8),
             pady=7,
         )
-
-        # --------------------------------------------------------------------
-        # ENTRY
-        # --------------------------------------------------------------------
 
         self.entry = tk.Entry(
             self.input_container,
@@ -1066,9 +1073,7 @@ class ArcLauncher:
             pady=8,
         )
 
-        # --------------------------------------------------------------------
-        # ZOE RESPONSE AREA
-        # --------------------------------------------------------------------
+        # RESPONSE
 
         self.response_container = tk.Frame(
             self.panel,
@@ -1096,9 +1101,34 @@ class ArcLauncher:
             fill=tk.X,
         )
 
-        # --------------------------------------------------------------------
-        # BOTTOM BAR
-        # --------------------------------------------------------------------
+        # NAV
+
+        self.nav_container = tk.Frame(
+            self.panel,
+            bg=PANEL_COLOR,
+        )
+
+        self.nav_container.pack(
+            fill=tk.X,
+            padx=14,
+            pady=(0, 3),
+        )
+
+        self.nav_label = tk.Label(
+            self.nav_container,
+            text="",
+            bg=PANEL_COLOR,
+            fg=FG_COLOR,
+            font=("Consolas", 10),
+            anchor="w",
+            justify=tk.LEFT,
+        )
+
+        self.nav_label.pack(
+            fill=tk.X
+        )
+
+        # BOTTOM
 
         self.bottom = tk.Frame(
             self.panel,
@@ -1126,7 +1156,11 @@ class ArcLauncher:
 
         self.hints_label = tk.Label(
             self.bottom,
-            text="ENTER  EXECUTE     ↑↓  HISTORY     ESC  CLOSE",
+            text=(
+                "ENTER  EXECUTE     "
+                "↑↓  HISTORY     "
+                "ESC  CLOSE"
+            ),
             bg=PANEL_COLOR,
             fg=DIM_COLOR,
             font=FONT_SMALL,
@@ -1160,28 +1194,50 @@ class ArcLauncher:
 
         self.entry.bind(
             "<Up>",
-            self.history_up,
+            self.on_up,
         )
 
         self.entry.bind(
             "<Down>",
-            self.history_down,
+            self.on_down,
         )
+
+    # ========================================================================
+    # UP / DOWN
+    # ========================================================================
+
+    def on_up(self, event=None):
+
+        if self.nav_active:
+
+            self.nav_move(-1)
+
+            return "break"
+
+        return self.history_up(event)
+
+    def on_down(self, event=None):
+
+        if self.nav_active:
+
+            self.nav_move(1)
+
+            return "break"
+
+        return self.history_down(event)
 
     # ========================================================================
     # COMMAND PREVIEW
     # ========================================================================
 
-    def on_key_release(
-        self,
-        event=None,
-    ):
+    def on_key_release(self, event=None):
+
+        if self.nav_active:
+            return
 
         text = self.entry.get().strip()
 
         self.update_command_preview(text)
-
-    # ------------------------------------------------------------------------
 
     def update_command_preview(
         self,
@@ -1210,9 +1266,7 @@ class ArcLauncher:
 
         normalized = self.core.normalize(text)
 
-        # --------------------------------------------------------------------
         # ZOE
-        # --------------------------------------------------------------------
 
         if (
             normalized == "zoe"
@@ -1237,9 +1291,7 @@ class ArcLauncher:
 
             return
 
-        # --------------------------------------------------------------------
         # MODES
-        # --------------------------------------------------------------------
 
         if normalized in MODES:
 
@@ -1261,9 +1313,7 @@ class ArcLauncher:
 
             return
 
-        # --------------------------------------------------------------------
         # COMMANDS
-        # --------------------------------------------------------------------
 
         for command in self.core.commands:
 
@@ -1305,9 +1355,7 @@ class ArcLauncher:
 
                     return
 
-        # --------------------------------------------------------------------
-        # UNKNOWN / APP SHORTCUT
-        # --------------------------------------------------------------------
+        # APP SHORTCUT
 
         self.command_badge.configure(
             text="APP",
@@ -1329,10 +1377,13 @@ class ArcLauncher:
     # ENTER
     # ========================================================================
 
-    def on_enter(
-        self,
-        event=None,
-    ):
+    def on_enter(self, event=None):
+
+        if self.nav_active:
+
+            self.activate_selected_window()
+
+            return "break"
 
         user_input = self.entry.get().strip()
 
@@ -1346,9 +1397,7 @@ class ArcLauncher:
             tk.END,
         )
 
-        self.set_processing(
-            user_input
-        )
+        self.set_processing(user_input)
 
         threading.Thread(
             target=self.execute,
@@ -1367,32 +1416,21 @@ class ArcLauncher:
         user_input: str,
     ):
 
-        normalized = self.core.normalize(
-            user_input
-        )
+        normalized = self.core.normalize(user_input)
 
         is_zoe = (
             normalized == "zoe"
             or normalized.startswith("zoe ")
         )
 
+        is_nav = normalized == "nav"
+
         try:
 
             if "," in user_input:
-
-                should_continue = (
-                    self.core.handle_multiple(
-                        user_input
-                    )
-                )
-
+                self.core.handle_multiple(user_input)
             else:
-
-                should_continue = (
-                    self.core.handle(
-                        user_input
-                    )
-                )
+                self.core.handle(user_input)
 
         except Exception as exc:
 
@@ -1401,11 +1439,14 @@ class ArcLauncher:
                 exc,
             )
 
-            should_continue = is_zoe
+        if is_nav:
 
-        # --------------------------------------------------------------------
-        # ZOE = KEEP ARC OPEN
-        # --------------------------------------------------------------------
+            self.root.after(
+                0,
+                self.finish_nav_command,
+            )
+
+            return
 
         if is_zoe:
 
@@ -1416,14 +1457,353 @@ class ArcLauncher:
 
             return
 
-        # --------------------------------------------------------------------
-        # EVERYTHING ELSE = CLOSE ARC
-        # --------------------------------------------------------------------
-
         self.root.after(
             0,
             self.root.destroy,
         )
+
+    # ========================================================================
+    # NAV CALLBACK
+    # ========================================================================
+
+    def handle_nav_callback(
+        self,
+        action: str,
+        windows=None,
+    ):
+
+        def update():
+
+            if action == "show":
+
+                self.show_nav_windows(
+                    windows or []
+                )
+
+            elif action == "clear":
+
+                self.clear_nav()
+
+        self.root.after(
+            0,
+            update,
+        )
+
+    # ========================================================================
+    # SHOW NAV
+    # ========================================================================
+
+    def show_nav_windows(
+        self,
+        windows: list[Any],
+    ):
+
+        self.nav_windows = windows
+        self.nav_index = 0
+        self.nav_active = True
+
+        self.entry.configure(
+            state=tk.DISABLED
+        )
+
+        self.command_badge.configure(
+            text="NAV",
+            bg=FG_COLOR,
+            fg=BG_COLOR,
+        )
+
+        self.status_label.configure(
+            text="NAV",
+            fg=FG_COLOR,
+        )
+
+        self.description_label.configure(
+            text="Select open window",
+            fg=FG_COLOR,
+        )
+
+        self.hints_label.configure(
+            text=(
+                "↑↓  SELECT     "
+                "ENTER  OPEN     "
+                "ESC  CANCEL"
+            )
+        )
+
+        self.update_nav_display()
+
+        self.root.bind(
+            "<Up>",
+            self.on_up,
+        )
+
+        self.root.bind(
+            "<Down>",
+            self.on_down,
+        )
+
+        self.root.bind(
+            "<Return>",
+            self.on_enter,
+        )
+
+        self.root.bind(
+            "<Escape>",
+            self.on_escape,
+        )
+
+        self.root.focus_force()
+
+    # ========================================================================
+    # NAV DISPLAY
+    # ========================================================================
+
+    def update_nav_display(self):
+
+        if not self.nav_windows:
+
+            self.clear_nav()
+
+            return
+
+        lines = [
+            f"OPEN WINDOWS  ·  {len(self.nav_windows)}"
+        ]
+
+        total = len(self.nav_windows)
+        max_visible = 8
+
+        if total <= max_visible:
+
+            start = 0
+
+        else:
+
+            start = max(
+                0,
+                self.nav_index - max_visible // 2,
+            )
+
+            start = min(
+                start,
+                total - max_visible,
+            )
+
+        end = min(
+            total,
+            start + max_visible,
+        )
+
+        if start > 0:
+            lines.append("   ...")
+
+        for index in range(start, end):
+
+            window = self.nav_windows[index]
+
+            prefix = (
+                "> "
+                if index == self.nav_index
+                else "  "
+            )
+
+            number = f"{index + 1:02d}"
+
+            title = window.display_name
+
+            if len(title) > 68:
+
+                title = (
+                    title[:65]
+                    + "..."
+                )
+
+            lines.append(
+                f"{prefix}{number}  {title}"
+            )
+
+        if end < total:
+            lines.append("   ...")
+
+        self.nav_label.configure(
+            text="\n".join(lines),
+            fg=FG_COLOR,
+        )
+
+        visible_count = min(
+            total,
+            8,
+        )
+
+        desired_height = (
+            190
+            + visible_count * 19
+        )
+
+        desired_height = min(
+            desired_height,
+            350,
+        )
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        x = (
+            screen_width - WINDOW_WIDTH
+        ) // 2
+
+        y = (
+            (
+                screen_height
+                - desired_height
+            )
+            // 2
+            - WINDOW_OFFSET_Y
+        )
+
+        self.root.geometry(
+            f"{WINDOW_WIDTH}x"
+            f"{desired_height}+{x}+{y}"
+        )
+
+    # ========================================================================
+    # NAV MOVE
+    # ========================================================================
+
+    def nav_move(
+        self,
+        direction: int,
+    ):
+
+        if not self.nav_active:
+            return
+
+        if not self.nav_windows:
+            return
+
+        count = len(self.nav_windows)
+
+        self.nav_index = (
+            self.nav_index + direction
+        ) % count
+
+        self.update_nav_display()
+
+    # ========================================================================
+    # ACTIVATE SELECTED WINDOW
+    # ========================================================================
+
+    def activate_selected_window(self):
+
+        if not self.nav_active:
+            return
+
+        if not self.nav_windows:
+            return
+
+        selected = self.nav_windows[
+            self.nav_index
+        ]
+
+        print(
+            "ARC: Activating → "
+            f"{selected.display_name}"
+        )
+
+        self.nav_active = False
+
+        success = self.core._activate_window(
+            selected
+        )
+
+        if success:
+
+            self.root.destroy()
+
+            return
+
+        self.status_label.configure(
+            text="ERROR",
+            fg=ERROR_COLOR,
+        )
+
+        self.description_label.configure(
+            text="Could not activate window",
+            fg=ERROR_COLOR,
+        )
+
+        self.nav_active = True
+
+    # ========================================================================
+    # FINISH NAV
+    # ========================================================================
+
+    def finish_nav_command(self):
+
+        if self.nav_windows:
+
+            self.nav_active = True
+
+            return
+
+        self.status_label.configure(
+            text="NAV",
+            fg=FG_COLOR,
+        )
+
+        self.command_badge.configure(
+            text="NAV",
+            bg=FG_COLOR,
+            fg=BG_COLOR,
+        )
+
+        self.description_label.configure(
+            text="No open windows",
+            fg=MUTED_COLOR,
+        )
+
+        self.entry.configure(
+            state=tk.NORMAL
+        )
+
+        self.entry.focus_force()
+
+    # ========================================================================
+    # CLEAR NAV
+    # ========================================================================
+
+    def clear_nav(self):
+
+        self.nav_active = False
+        self.nav_windows = []
+        self.nav_index = 0
+
+        self.nav_label.configure(
+            text=""
+        )
+
+        self.entry.configure(
+            state=tk.NORMAL
+        )
+
+        self.root.unbind("<Up>")
+        self.root.unbind("<Down>")
+        self.root.unbind("<Return>")
+
+        self.root.bind(
+            "<Escape>",
+            self.on_escape,
+        )
+
+        self.hints_label.configure(
+            text=(
+                "ENTER  EXECUTE     "
+                "↑↓  HISTORY     "
+                "ESC  CLOSE"
+            )
+        )
+
+        self.entry.focus_force()
 
     # ========================================================================
     # ZOE RESPONSE
@@ -1437,26 +1817,19 @@ class ArcLauncher:
 
         def update():
 
-            if kind == "error":
-
-                self.response_label.configure(
-                    text=f"ZOE  ·  {message}",
-                    fg=ERROR_COLOR,
-                )
-
-            else:
-
-                self.response_label.configure(
-                    text=f"ZOE  ·  {message}",
-                    fg=FG_COLOR,
-                )
+            self.response_label.configure(
+                text=f"ZOE  ·  {message}",
+                fg=(
+                    ERROR_COLOR
+                    if kind == "error"
+                    else FG_COLOR
+                ),
+            )
 
         self.root.after(
             0,
             update,
         )
-
-    # ------------------------------------------------------------------------
 
     def finish_zoe_command(self):
 
@@ -1476,10 +1849,14 @@ class ArcLauncher:
             fg=MUTED_COLOR,
         )
 
+        self.entry.configure(
+            state=tk.NORMAL
+        )
+
         self.entry.focus_force()
 
     # ========================================================================
-    # PROCESSING STATE
+    # PROCESSING
     # ========================================================================
 
     def set_processing(
@@ -1496,8 +1873,16 @@ class ArcLauncher:
             or normalized.startswith("zoe ")
         )
 
+        is_nav = normalized == "nav"
+
         self.command_badge.configure(
-            text="ZOE" if is_zoe else "...",
+            text=(
+                "ZOE"
+                if is_zoe
+                else "NAV"
+                if is_nav
+                else "..."
+            ),
             bg=FG_COLOR,
             fg=BG_COLOR,
         )
@@ -1506,6 +1891,8 @@ class ArcLauncher:
             text=(
                 "Contacting ZOE..."
                 if is_zoe
+                else "Scanning open windows..."
+                if is_nav
                 else "Executing command..."
             ),
             fg=FG_COLOR,
@@ -1515,6 +1902,8 @@ class ArcLauncher:
             text=(
                 "ZOE"
                 if is_zoe
+                else "NAV"
+                if is_nav
                 else "RUNNING"
             ),
             fg=FG_COLOR,
@@ -1606,6 +1995,28 @@ class ArcLauncher:
         event=None,
     ):
 
+        if self.nav_active:
+
+            self.clear_nav()
+
+            self.status_label.configure(
+                text="READY",
+                fg=MUTED_COLOR,
+            )
+
+            self.command_badge.configure(
+                text="ARC",
+                bg=FG_COLOR,
+                fg=BG_COLOR,
+            )
+
+            self.description_label.configure(
+                text="Navigation cancelled",
+                fg=MUTED_COLOR,
+            )
+
+            return "break"
+
         self.core.running = False
 
         self.root.destroy()
@@ -1626,15 +2037,11 @@ class ArcLauncher:
             or self.history[-1] != command
         ):
 
-            self.history.append(
-                command
-            )
+            self.history.append(command)
 
         self.history_index = len(
             self.history
         )
-
-    # ------------------------------------------------------------------------
 
     def history_up(
         self,
@@ -1657,8 +2064,6 @@ class ArcLauncher:
 
         return "break"
 
-    # ------------------------------------------------------------------------
-
     def history_down(
         self,
         event=None,
@@ -1672,10 +2077,7 @@ class ArcLauncher:
             self.history_index + 1,
         )
 
-        if (
-            self.history_index
-            == len(self.history)
-        ):
+        if self.history_index == len(self.history):
 
             self.set_input("")
 
@@ -1688,8 +2090,6 @@ class ArcLauncher:
             )
 
         return "break"
-
-    # ------------------------------------------------------------------------
 
     def set_input(
         self,
@@ -1719,7 +2119,6 @@ class ArcLauncher:
     # ========================================================================
 
     def run(self):
-
         self.root.mainloop()
 
 
@@ -1750,13 +2149,12 @@ def boot_screen():
 
 def main():
 
+    # Nothing expensive happens before Tk starts.
     boot_screen()
 
     core = ArcCore()
 
-    launcher = ArcLauncher(
-        core
-    )
+    launcher = ArcLauncher(core)
 
     launcher.run()
 
