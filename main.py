@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -112,7 +113,7 @@ MODES = {
 # COMMAND MODEL
 # ============================================================================
 
-@dataclass
+@dataclass(slots=True)
 class Command:
     name: str
     handler: Callable[[str], None]
@@ -133,11 +134,13 @@ class ArcCore:
         nav_callback: Callable[..., None] | None = None,
     ):
         self.running = True
-        self.commands: list[Command] = []
 
         self.ui_callback = ui_callback
         self.zoe_response_callback = zoe_response_callback
         self.nav_callback = nav_callback
+
+        # Small routing cache.
+        self._command_lookup: dict[str, Command] = {}
 
         self._register_commands()
 
@@ -186,8 +189,10 @@ class ArcCore:
     ):
         print(f"ARC: {message}")
 
-        if self.ui_callback:
-            self.ui_callback(message, kind)
+        callback = self.ui_callback
+
+        if callback:
+            callback(message, kind)
 
     # ========================================================================
     # COMMAND REGISTRATION
@@ -195,7 +200,7 @@ class ArcCore:
 
     def _register_commands(self):
 
-        self.commands = [
+        commands = [
             Command(
                 name="open",
                 handler=self.command_open,
@@ -239,15 +244,24 @@ class ArcCore:
             ),
         ]
 
+        self.commands = commands
+
+        # Precompute routing table once.
+        lookup = self._command_lookup
+
+        for command in commands:
+            lookup[command.name] = command
+
+            for alias in command.aliases:
+                lookup[alias] = command
+
     # ========================================================================
     # NORMALIZATION
     # ========================================================================
 
     @staticmethod
     def normalize(text: str) -> str:
-        return " ".join(
-            text.strip().lower().split()
-        )
+        return " ".join(text.strip().lower().split())
 
     # ========================================================================
     # MAIN ROUTER
@@ -264,13 +278,12 @@ class ArcCore:
         # ZOE
         # --------------------------------------------------------------------
 
-        if (
-            user_input == "zoe"
-            or user_input.startswith("zoe ")
-        ):
-            self.command_zoe(
-                user_input[3:].strip()
-            )
+        if user_input == "zoe":
+            self.command_zoe("")
+            return True
+
+        if user_input.startswith("zoe "):
+            self.command_zoe(user_input[4:])
             return True
 
         # --------------------------------------------------------------------
@@ -285,40 +298,46 @@ class ArcCore:
         # REGISTERED COMMANDS
         # --------------------------------------------------------------------
 
-        for command in self.commands:
+        first_space = user_input.find(" ")
 
-            names = (
-                command.name,
-                *command.aliases,
-            )
+        if first_space == -1:
+            command_name = user_input
+            argument = ""
+        else:
+            command_name = user_input[:first_space]
+            argument = user_input[first_space + 1:].strip()
 
-            for name in names:
+            # Multi-word command.
+            if command_name == "new":
+                second_space = user_input.find(" ", first_space + 1)
 
-                if user_input == name:
-                    argument = ""
+                if second_space != -1:
+                    possible_name = user_input[:second_space]
 
-                elif user_input.startswith(name + " "):
-                    argument = user_input[len(name):].strip()
+                    if possible_name == "new project":
+                        command_name = possible_name
+                        argument = user_input[second_space + 1:].strip()
 
-                else:
-                    continue
+        command = self._command_lookup.get(command_name)
 
-                try:
-                    command.handler(argument)
+        if command is not None:
 
-                except Exception as exc:
-                    self.report_error(
-                        command.name,
-                        exc,
-                    )
+            try:
+                command.handler(argument)
 
-                if command.name == "nav":
-                    return True
+            except Exception as exc:
+                self.report_error(
+                    command.name,
+                    exc,
+                )
 
-                if command.name == "exit":
-                    return self.running
+            if command.name == "nav":
+                return True
 
-                return False
+            if command.name == "exit":
+                return self.running
+
+            return False
 
         # --------------------------------------------------------------------
         # APP SHORTCUT
@@ -344,13 +363,12 @@ class ArcCore:
         user_input: str,
     ) -> bool:
 
-        commands = [
-            part.strip()
-            for part in user_input.split(",")
-            if part.strip()
-        ]
+        for part in user_input.split(","):
 
-        for command in commands:
+            command = part.strip()
+
+            if not command:
+                continue
 
             if not self.handle(command):
                 break
@@ -368,7 +386,9 @@ class ArcCore:
 
         mode_name = self.normalize(mode_name)
 
-        if mode_name not in MODES:
+        actions = MODES.get(mode_name)
+
+        if actions is None:
             self.report_error(
                 "mode",
                 ValueError(
@@ -382,7 +402,7 @@ class ArcCore:
             "normal",
         )
 
-        for action in MODES[mode_name]:
+        for action in actions:
 
             if not self.running:
                 break
@@ -395,10 +415,7 @@ class ArcCore:
     # OPEN
     # ========================================================================
 
-    def command_open(
-        self,
-        argument: str,
-    ):
+    def command_open(self, argument: str):
 
         if not argument:
             self.status(
@@ -418,10 +435,7 @@ class ArcCore:
     # SITE
     # ========================================================================
 
-    def command_site(
-        self,
-        argument: str,
-    ):
+    def command_site(self, argument: str):
 
         if not argument:
             self.status(
@@ -441,10 +455,7 @@ class ArcCore:
     # SEARCH
     # ========================================================================
 
-    def command_search(
-        self,
-        argument: str,
-    ):
+    def command_search(self, argument: str):
 
         if not argument:
             self.status(
@@ -464,10 +475,7 @@ class ArcCore:
     # FILE SEARCH
     # ========================================================================
 
-    def command_file(
-        self,
-        argument: str,
-    ):
+    def command_file(self, argument: str):
 
         if not argument:
             self.status(
@@ -487,10 +495,7 @@ class ArcCore:
     # NAV
     # ========================================================================
 
-    def command_nav(
-        self,
-        argument: str,
-    ):
+    def command_nav(self, argument: str):
 
         self.status(
             "Scanning open windows...",
@@ -506,8 +511,10 @@ class ArcCore:
                 "error",
             )
 
-            if self.nav_callback:
-                self.nav_callback("clear")
+            callback = self.nav_callback
+
+            if callback:
+                callback("clear")
 
             return
 
@@ -515,8 +522,10 @@ class ArcCore:
             f"ARC: Found {len(windows)} open window(s)"
         )
 
-        if self.nav_callback:
-            self.nav_callback(
+        callback = self.nav_callback
+
+        if callback:
+            callback(
                 "show",
                 windows,
             )
@@ -525,10 +534,7 @@ class ArcCore:
     # ZOE
     # ========================================================================
 
-    def command_zoe(
-        self,
-        argument: str,
-    ):
+    def command_zoe(self, argument: str):
 
         if not argument:
             self.status(
@@ -545,7 +551,8 @@ class ArcCore:
         payload = json.dumps(
             {
                 "message": argument,
-            }
+            },
+            separators=(",", ":"),
         ).encode("utf-8")
 
         request = urllib.request.Request(
@@ -564,10 +571,8 @@ class ArcCore:
                 timeout=30,
             ) as response:
 
-                raw_response = (
-                    response
-                    .read()
-                    .decode("utf-8")
+                raw_response = response.read().decode(
+                    "utf-8"
                 )
 
                 data = json.loads(raw_response)
@@ -585,8 +590,10 @@ class ArcCore:
 
                 print(f"ZOE: {result}")
 
-                if self.zoe_response_callback:
-                    self.zoe_response_callback(
+                callback = self.zoe_response_callback
+
+                if callback:
+                    callback(
                         result,
                         "success",
                     )
@@ -598,8 +605,10 @@ class ArcCore:
 
             else:
 
-                if self.zoe_response_callback:
-                    self.zoe_response_callback(
+                callback = self.zoe_response_callback
+
+                if callback:
+                    callback(
                         "ZOE returned no response.",
                         "error",
                     )
@@ -625,8 +634,10 @@ class ArcCore:
                 error,
             )
 
-            if self.zoe_response_callback:
-                self.zoe_response_callback(
+            callback = self.zoe_response_callback
+
+            if callback:
+                callback(
                     f"ZOE server error: HTTP {exc.code}",
                     "error",
                 )
@@ -643,8 +654,10 @@ class ArcCore:
                 error,
             )
 
-            if self.zoe_response_callback:
-                self.zoe_response_callback(
+            callback = self.zoe_response_callback
+
+            if callback:
+                callback(
                     "Could not connect to ZOE.",
                     "error",
                 )
@@ -656,8 +669,10 @@ class ArcCore:
                 exc,
             )
 
-            if self.zoe_response_callback:
-                self.zoe_response_callback(
+            callback = self.zoe_response_callback
+
+            if callback:
+                callback(
                     f"ZOE error: {exc}",
                     "error",
                 )
@@ -666,10 +681,7 @@ class ArcCore:
     # NEW PROJECT
     # ========================================================================
 
-    def command_new_project(
-        self,
-        argument: str,
-    ):
+    def command_new_project(self, argument: str):
 
         if getattr(sys, "frozen", False):
 
@@ -709,10 +721,7 @@ class ArcCore:
     # SYSTEM
     # ========================================================================
 
-    def command_system(
-        self,
-        argument: str,
-    ):
+    def command_system(self, argument: str):
 
         action = self.normalize(argument)
 
@@ -722,7 +731,9 @@ class ArcCore:
             "lock": self.system_lock,
         }
 
-        if action not in actions:
+        handler = actions.get(action)
+
+        if handler is None:
 
             self.status(
                 "Available → shutdown / restart / lock",
@@ -731,18 +742,13 @@ class ArcCore:
 
             return
 
-        actions[action]()
+        handler()
 
     @staticmethod
     def system_shutdown():
 
         subprocess.Popen(
-            [
-                "shutdown",
-                "/s",
-                "/t",
-                "0",
-            ],
+            ["shutdown", "/s", "/t", "0"],
             shell=False,
         )
 
@@ -750,12 +756,7 @@ class ArcCore:
     def system_restart():
 
         subprocess.Popen(
-            [
-                "shutdown",
-                "/r",
-                "/t",
-                "0",
-            ],
+            ["shutdown", "/r", "/t", "0"],
             shell=False,
         )
 
@@ -774,10 +775,7 @@ class ArcCore:
     # EXIT
     # ========================================================================
 
-    def command_exit(
-        self,
-        argument: str,
-    ):
+    def command_exit(self, argument: str):
         self.running = False
 
     # ========================================================================
@@ -799,9 +797,10 @@ class ArcCore:
             f"{message}\n"
         )
 
-        if self.ui_callback:
+        callback = self.ui_callback
 
-            self.ui_callback(
+        if callback:
+            callback(
                 f"{source.upper()} · {message}",
                 "error",
             )
@@ -820,9 +819,8 @@ class ArcLauncher:
 
         self.core = core
 
-        # Tk is created immediately.
+        # Tk starts immediately.
         self.root = tk.Tk()
-
         self.root.withdraw()
 
         self.history: list[str] = []
@@ -831,6 +829,10 @@ class ArcLauncher:
         self.nav_active = False
         self.nav_windows: list[Any] = []
         self.nav_index = 0
+
+        # Cache screen dimensions once.
+        self.screen_width = self.root.winfo_screenwidth()
+        self.screen_height = self.root.winfo_screenheight()
 
         self._configure_window()
         self._build_ui()
@@ -842,10 +844,8 @@ class ArcLauncher:
 
         self.root.deiconify()
 
-        self.root.after(
-            10,
-            self._focus_arc,
-        )
+        # Focus only after the first event loop turn.
+        self.root.after_idle(self._focus_arc)
 
     # ========================================================================
     # WINDOW
@@ -855,16 +855,13 @@ class ArcLauncher:
 
         self.root.title("ARC")
 
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-
         x = (
-            screen_width - WINDOW_WIDTH
+            self.screen_width - WINDOW_WIDTH
         ) // 2
 
         y = (
             (
-                screen_height
+                self.screen_height
                 - WINDOW_HEIGHT
             )
             // 2
@@ -903,9 +900,7 @@ class ArcLauncher:
 
         try:
 
-            self.root.deiconify()
             self.root.lift()
-
             self.root.attributes(
                 "-topmost",
                 True,
@@ -957,7 +952,6 @@ class ArcLauncher:
         )
 
         self.header.pack(fill=tk.X)
-
         self.header.pack_propagate(False)
 
         self.arc_label = tk.Label(
@@ -1124,9 +1118,7 @@ class ArcLauncher:
             justify=tk.LEFT,
         )
 
-        self.nav_label.pack(
-            fill=tk.X
-        )
+        self.nav_label.pack(fill=tk.X)
 
         # BOTTOM
 
@@ -1182,25 +1174,10 @@ class ArcLauncher:
 
     def _bind_keys(self):
 
-        self.entry.bind(
-            "<Return>",
-            self.on_enter,
-        )
-
-        self.entry.bind(
-            "<Escape>",
-            self.on_escape,
-        )
-
-        self.entry.bind(
-            "<Up>",
-            self.on_up,
-        )
-
-        self.entry.bind(
-            "<Down>",
-            self.on_down,
-        )
+        self.entry.bind("<Return>", self.on_enter)
+        self.entry.bind("<Escape>", self.on_escape)
+        self.entry.bind("<Up>", self.on_up)
+        self.entry.bind("<Down>", self.on_down)
 
     # ========================================================================
     # UP / DOWN
@@ -1209,9 +1186,7 @@ class ArcLauncher:
     def on_up(self, event=None):
 
         if self.nav_active:
-
             self.nav_move(-1)
-
             return "break"
 
         return self.history_up(event)
@@ -1219,9 +1194,7 @@ class ArcLauncher:
     def on_down(self, event=None):
 
         if self.nav_active:
-
             self.nav_move(1)
-
             return "break"
 
         return self.history_down(event)
@@ -1235,14 +1208,11 @@ class ArcLauncher:
         if self.nav_active:
             return
 
-        text = self.entry.get().strip()
+        self.update_command_preview(
+            self.entry.get().strip()
+        )
 
-        self.update_command_preview(text)
-
-    def update_command_preview(
-        self,
-        text: str,
-    ):
+    def update_command_preview(self, text: str):
 
         if not text:
 
@@ -1268,10 +1238,7 @@ class ArcLauncher:
 
         # ZOE
 
-        if (
-            normalized == "zoe"
-            or normalized.startswith("zoe ")
-        ):
+        if normalized == "zoe" or normalized.startswith("zoe "):
 
             self.command_badge.configure(
                 text="ZOE",
@@ -1317,43 +1284,55 @@ class ArcLauncher:
 
         for command in self.core.commands:
 
-            names = (
+            if normalized == command.name:
+
+                matched = True
+
+            elif normalized.startswith(command.name + " "):
+
+                matched = True
+
+            else:
+
+                matched = False
+
+                for alias in command.aliases:
+
+                    if (
+                        normalized == alias
+                        or normalized.startswith(alias + " ")
+                    ):
+                        matched = True
+                        break
+
+            if not matched:
+                continue
+
+            meta = COMMAND_META.get(
                 command.name,
-                *command.aliases,
+                {
+                    "label": command.name.upper(),
+                    "description": command.description,
+                },
             )
 
-            for name in names:
+            self.command_badge.configure(
+                text=meta["label"],
+                bg=FG_COLOR,
+                fg=BG_COLOR,
+            )
 
-                if (
-                    normalized == name
-                    or normalized.startswith(name + " ")
-                ):
+            self.description_label.configure(
+                text=meta["description"],
+                fg=FG_COLOR,
+            )
 
-                    meta = COMMAND_META.get(
-                        command.name,
-                        {
-                            "label": command.name.upper(),
-                            "description": command.description,
-                        },
-                    )
+            self.status_label.configure(
+                text="COMMAND",
+                fg=FG_COLOR,
+            )
 
-                    self.command_badge.configure(
-                        text=meta["label"],
-                        bg=FG_COLOR,
-                        fg=BG_COLOR,
-                    )
-
-                    self.description_label.configure(
-                        text=meta["description"],
-                        fg=FG_COLOR,
-                    )
-
-                    self.status_label.configure(
-                        text="COMMAND",
-                        fg=FG_COLOR,
-                    )
-
-                    return
+            return
 
         # APP SHORTCUT
 
@@ -1392,10 +1371,7 @@ class ArcLauncher:
 
         self.add_history(user_input)
 
-        self.entry.delete(
-            0,
-            tk.END,
-        )
+        self.entry.delete(0, tk.END)
 
         self.set_processing(user_input)
 
@@ -1411,10 +1387,7 @@ class ArcLauncher:
     # EXECUTION
     # ========================================================================
 
-    def execute(
-        self,
-        user_input: str,
-    ):
+    def execute(self, user_input: str):
 
         normalized = self.core.normalize(user_input)
 
@@ -1484,10 +1457,7 @@ class ArcLauncher:
 
                 self.clear_nav()
 
-        self.root.after(
-            0,
-            update,
-        )
+        self.root.after(0, update)
 
     # ========================================================================
     # SHOW NAV
@@ -1532,25 +1502,10 @@ class ArcLauncher:
 
         self.update_nav_display()
 
-        self.root.bind(
-            "<Up>",
-            self.on_up,
-        )
-
-        self.root.bind(
-            "<Down>",
-            self.on_down,
-        )
-
-        self.root.bind(
-            "<Return>",
-            self.on_enter,
-        )
-
-        self.root.bind(
-            "<Escape>",
-            self.on_escape,
-        )
+        self.root.bind("<Up>", self.on_up)
+        self.root.bind("<Down>", self.on_down)
+        self.root.bind("<Return>", self.on_enter)
+        self.root.bind("<Escape>", self.on_escape)
 
         self.root.focus_force()
 
@@ -1563,15 +1518,14 @@ class ArcLauncher:
         if not self.nav_windows:
 
             self.clear_nav()
-
             return
-
-        lines = [
-            f"OPEN WINDOWS  ·  {len(self.nav_windows)}"
-        ]
 
         total = len(self.nav_windows)
         max_visible = 8
+
+        lines = [
+            f"OPEN WINDOWS  ·  {total}"
+        ]
 
         if total <= max_visible:
 
@@ -1607,19 +1561,13 @@ class ArcLauncher:
                 else "  "
             )
 
-            number = f"{index + 1:02d}"
-
             title = window.display_name
 
             if len(title) > 68:
-
-                title = (
-                    title[:65]
-                    + "..."
-                )
+                title = title[:65] + "..."
 
             lines.append(
-                f"{prefix}{number}  {title}"
+                f"{prefix}{index + 1:02d}  {title}"
             )
 
         if end < total:
@@ -1632,29 +1580,21 @@ class ArcLauncher:
 
         visible_count = min(
             total,
-            8,
-        )
-
-        desired_height = (
-            190
-            + visible_count * 19
+            max_visible,
         )
 
         desired_height = min(
-            desired_height,
+            190 + visible_count * 19,
             350,
         )
 
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-
         x = (
-            screen_width - WINDOW_WIDTH
+            self.screen_width - WINDOW_WIDTH
         ) // 2
 
         y = (
             (
-                screen_height
+                self.screen_height
                 - desired_height
             )
             // 2
@@ -1670,10 +1610,7 @@ class ArcLauncher:
     # NAV MOVE
     # ========================================================================
 
-    def nav_move(
-        self,
-        direction: int,
-    ):
+    def nav_move(self, direction: int):
 
         if not self.nav_active:
             return
@@ -1701,9 +1638,7 @@ class ArcLauncher:
         if not self.nav_windows:
             return
 
-        selected = self.nav_windows[
-            self.nav_index
-        ]
+        selected = self.nav_windows[self.nav_index]
 
         print(
             "ARC: Activating → "
@@ -1719,7 +1654,6 @@ class ArcLauncher:
         if success:
 
             self.root.destroy()
-
             return
 
         self.status_label.configure(
@@ -1743,7 +1677,6 @@ class ArcLauncher:
         if self.nav_windows:
 
             self.nav_active = True
-
             return
 
         self.status_label.configure(
@@ -1778,9 +1711,7 @@ class ArcLauncher:
         self.nav_windows = []
         self.nav_index = 0
 
-        self.nav_label.configure(
-            text=""
-        )
+        self.nav_label.configure(text="")
 
         self.entry.configure(
             state=tk.NORMAL
@@ -1826,10 +1757,7 @@ class ArcLauncher:
                 ),
             )
 
-        self.root.after(
-            0,
-            update,
-        )
+        self.root.after(0, update)
 
     def finish_zoe_command(self):
 
@@ -1981,19 +1909,13 @@ class ArcLauncher:
                     fg=MUTED_COLOR,
                 )
 
-        self.root.after(
-            0,
-            update,
-        )
+        self.root.after(0, update)
 
     # ========================================================================
     # ESCAPE
     # ========================================================================
 
-    def on_escape(
-        self,
-        event=None,
-    ):
+    def on_escape(self, event=None):
 
         if self.nav_active:
 
@@ -2027,26 +1949,19 @@ class ArcLauncher:
     # HISTORY
     # ========================================================================
 
-    def add_history(
-        self,
-        command: str,
-    ):
+    def add_history(self, command: str):
 
         if (
             not self.history
             or self.history[-1] != command
         ):
-
             self.history.append(command)
 
         self.history_index = len(
             self.history
         )
 
-    def history_up(
-        self,
-        event=None,
-    ):
+    def history_up(self, event=None):
 
         if not self.history:
             return "break"
@@ -2057,17 +1972,12 @@ class ArcLauncher:
         )
 
         self.set_input(
-            self.history[
-                self.history_index
-            ]
+            self.history[self.history_index]
         )
 
         return "break"
 
-    def history_down(
-        self,
-        event=None,
-    ):
+    def history_down(self, event=None):
 
         if not self.history:
             return "break"
@@ -2084,35 +1994,18 @@ class ArcLauncher:
         else:
 
             self.set_input(
-                self.history[
-                    self.history_index
-                ]
+                self.history[self.history_index]
             )
 
         return "break"
 
-    def set_input(
-        self,
-        text: str,
-    ):
+    def set_input(self, text: str):
 
-        self.entry.delete(
-            0,
-            tk.END,
-        )
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, text)
+        self.entry.icursor(tk.END)
 
-        self.entry.insert(
-            0,
-            text,
-        )
-
-        self.entry.icursor(
-            tk.END
-        )
-
-        self.update_command_preview(
-            text
-        )
+        self.update_command_preview(text)
 
     # ========================================================================
     # RUN
@@ -2149,11 +2042,9 @@ def boot_screen():
 
 def main():
 
-    # Nothing expensive happens before Tk starts.
     boot_screen()
 
     core = ArcCore()
-
     launcher = ArcLauncher(core)
 
     launcher.run()
